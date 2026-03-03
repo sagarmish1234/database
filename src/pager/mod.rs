@@ -12,12 +12,13 @@ pub struct Pager {
     buffer_pool: HashMap<usize, Page>,
 }
 
+#[derive(Debug)]
 pub struct Page {
     pub content: [u8; Pager::PAGE_SIZE],
     pub page_id: usize,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum PageError {
     #[error("Invalid page id {0}")]
     InvalidPageId(usize),
@@ -127,6 +128,31 @@ mod tests {
         let page = pager.read_page(0)?;
         assert_eq!(page.content, content);
         assert_eq!(page.page_id, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_pager_write_and_read_negative() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let path_str = temp_file.path().to_str().expect("Path not valid UTF-8");
+        let mut pager = Pager::new(path_str)?;
+        let allocate_page = pager.allocate_page()?;
+        println!("Page id - {}", allocate_page.page_id);
+        assert!(allocate_page.page_id == 0);
+        assert_eq!(allocate_page.content, [0u8; Pager::PAGE_SIZE]);
+        let content = [1u8; Pager::PAGE_SIZE + 2];
+        assert_eq!(
+            pager.write_page(2, &content).unwrap_err().to_string(),
+            PageError::InvalidPageId(2).to_string()
+        );
+        assert_eq!(
+            pager.write_page(0, &content).unwrap_err().to_string(),
+            PageError::InvalidPageSize(4098).to_string()
+        );
+        assert_eq!(
+            pager.read_page(2).unwrap_err().to_string(),
+            PageError::InvalidPageId(2).to_string()
+        );
         Ok(())
     }
 }
