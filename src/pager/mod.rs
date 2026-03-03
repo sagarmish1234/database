@@ -32,6 +32,7 @@ pub enum PageError {
 
 impl Pager {
     pub const PAGE_SIZE: usize = 4096;
+    pub const CACHE_SIZE: usize = 100;
 
     pub fn new(file_path: &str) -> Result<Self> {
         let file = OpenOptions::new()
