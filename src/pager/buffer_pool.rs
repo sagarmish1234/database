@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use crate::cache::LruCache;
+// use crate::cache::LruCache;
 
 use super::Page;
 
@@ -9,7 +9,7 @@ type PageId = usize;
 struct BufferPool {
     cache: HashMap<PageId, Rc<RefCell<Page>>>,
     cache_limit: usize,
-    cache_evictor: LruCache<PageId>,
+    // cache_evictor: LruCache<PageId>,
 }
 
 impl BufferPool {
