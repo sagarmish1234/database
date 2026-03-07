@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 type Link<T> = Option<Rc<RefCell<Node<T>>>>;
 
-// pub struct LruCache<T> {}
+pub struct LruCache<T> {}
 
 struct Node<T> {
     key: T,
@@ -63,8 +63,16 @@ impl<T: Default> DoublyLinkedList<T> {
         }
 
         self.head.borrow_mut().next = Some(new_node.clone());
-
+        self.increment_size();
         new_node
+    }
+
+    fn increment_size(&mut self) {
+        self.size += 1;
+    }
+
+    fn decrement_size(&mut self) {
+        self.size -= 1;
     }
 
     fn push_back(&mut self, key: T) -> Rc<RefCell<Node<T>>> {
@@ -81,6 +89,7 @@ impl<T: Default> DoublyLinkedList<T> {
 
         self.tail.borrow_mut().prev = Some(new_node.clone());
 
+        self.increment_size();
         new_node
     }
 
@@ -106,10 +115,9 @@ impl<T: Default> DoublyLinkedList<T> {
             node.borrow_mut().prev = Some(self.head.clone());
         }
 
-        // 5. Clean up the popped node's pointers (Prevents leaks/confusion)
         to_remove.borrow_mut().next = None;
         to_remove.borrow_mut().prev = None;
-
+        self.decrement_size();
         Some(to_remove)
     }
 
@@ -134,6 +142,7 @@ impl<T: Default> DoublyLinkedList<T> {
         to_remove.borrow_mut().next = None;
         to_remove.borrow_mut().prev = None;
 
+        self.decrement_size();
         Some(to_remove)
     }
 }
