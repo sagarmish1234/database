@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-// use crate::cache::LruCache;
+use crate::cache::LruCache;
 
 use super::Page;
 
@@ -9,7 +9,7 @@ type PageId = usize;
 struct BufferPool {
     cache: HashMap<PageId, Rc<RefCell<Page>>>,
     cache_limit: usize,
-    // cache_evictor: LruCache<PageId>,
+    cache_evictor: LruCache<PageId>,
 }
 
 impl BufferPool {
@@ -19,6 +19,7 @@ impl BufferPool {
         Self {
             cache: HashMap::new(),
             cache_limit,
+            cache_evictor: LruCache::new(cache_limit),
         }
     }
 
@@ -26,6 +27,7 @@ impl BufferPool {
         Self {
             cache: HashMap::new(),
             cache_limit: Self::DEFAULT_CACHE_LIMIT,
+            cache_evictor: LruCache::new(Self::DEFAULT_CACHE_LIMIT),
         }
     }
 
@@ -33,8 +35,10 @@ impl BufferPool {
         self.cache.contains_key(&page_id)
     }
 
-    pub fn get_page(&self, page_id: usize) -> Option<Rc<RefCell<Page>>> {
+    pub fn get_page(&mut self, page_id: usize) -> Option<Rc<RefCell<Page>>> {
         if let Some(page) = self.cache.get(&page_id) {
+            self.cache_evictor.access(page_id);
+
             return Some(Rc::clone(page));
         }
         None

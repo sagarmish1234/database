@@ -1,149 +1,73 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, hash::Hash, rc::Rc};
 
-type Link<T> = Option<Rc<RefCell<Node<T>>>>;
+use thiserror::Error;
 
-pub struct LruCache<T> {}
+use anyhow::Result;
 
-struct Node<T> {
-    key: T,
-    next: Link<T>,
-    prev: Link<T>,
+use super::{DoublyLinkedList, Node};
+
+#[derive(Error, Debug, PartialEq)]
+pub enum CacheError {
+    #[error("Key not found")]
+    KeyNotFound,
+
+    #[error("Eviction not possible as there are no keys to evict")]
+    EvictionNotPossible,
 }
 
-impl<T: Default> Node<T> {
-    fn new(key: T) -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(Self {
-            key,
-            next: None,
-            prev: None,
-        }))
-    }
-
-    fn new_with_prev_and_next(
-        key: T,
-        next: Option<Rc<RefCell<Self>>>,
-        prev: Option<Rc<RefCell<Self>>>,
-    ) -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(Self { key, next, prev }))
-    }
+pub struct LruCache<T> {
+    map: HashMap<T, Rc<RefCell<Node<T>>>>,
+    list: DoublyLinkedList<T>,
+    capacity: usize,
 }
 
-struct DoublyLinkedList<T> {
-    head: Rc<RefCell<Node<T>>>,
-    tail: Rc<RefCell<Node<T>>>,
-    size: usize,
-}
-
-impl<T: Default> DoublyLinkedList<T> {
-    fn new() -> Self {
-        let head = Node::new(T::default());
-        let tail = Node::new(T::default());
-
-        head.borrow_mut().next = Some(Rc::clone(&tail));
-        tail.borrow_mut().prev = Some(Rc::clone(&head));
-
+impl<T: Default + Hash + Eq + Clone> LruCache<T> {
+    pub fn new(capacity: usize) -> Self {
         Self {
-            head,
-            tail,
-            size: 0,
+            map: HashMap::new(),
+            list: DoublyLinkedList::new(),
+            capacity,
         }
     }
 
-    fn push_front(&mut self, key: T) -> Rc<RefCell<Node<T>>> {
-        let old_next_link = self.head.borrow().next.clone();
-
-        let new_node = Node::new_with_prev_and_next(
-            key,
-            self.head.borrow().next.clone(),
-            Some(self.head.clone()),
-        );
-
-        if let Some(ref old_next) = old_next_link {
-            old_next.borrow_mut().prev = Some(new_node.clone());
+    pub fn access(&mut self, key: T) {
+        let node = self.map.get(&key).clone();
+        if let None = node {
+            let node = self.list.push_front(key.clone());
+            self.map.insert(key, node);
+            return;
         }
-
-        self.head.borrow_mut().next = Some(new_node.clone());
-        self.increment_size();
-        new_node
+        let internal = node.unwrap();
+        self.list.remove_node(internal.clone());
+        self.list.push_node_front(internal.clone());
     }
 
-    fn increment_size(&mut self) {
-        self.size += 1;
+    pub fn remove(&mut self, key: T) -> Result<()> {
+        let node = self.map.get(&key).clone();
+        if let None = node {
+            return Err(CacheError::KeyNotFound.into());
+        }
+        let internal = node.unwrap();
+        self.list.remove_node(internal.clone());
+        self.map.remove(&key);
+        Ok(())
     }
 
-    fn decrement_size(&mut self) {
-        self.size -= 1;
+    pub fn evict(&mut self) -> Result<T> {
+        let node = self.list.peek_back();
+        if let None = node {
+            return Err(CacheError::EvictionNotPossible.into());
+        }
+
+        Ok(node.unwrap().borrow().key())
     }
 
-    fn push_back(&mut self, key: T) -> Rc<RefCell<Node<T>>> {
-        let old_prev = self.tail.borrow().prev.clone();
-
-        let new_node = Node::new_with_prev_and_next(
-            key,
-            Some(self.tail.clone()),
-            self.tail.borrow().prev.clone(),
-        );
-        if let Some(ref prev) = old_prev {
-            prev.borrow_mut().next = Some(new_node.clone());
-        }
-
-        self.tail.borrow_mut().prev = Some(new_node.clone());
-
-        self.increment_size();
-        new_node
+    pub fn len(&mut self) -> usize {
+        self.map.len()
     }
 
-    fn pop_front(&mut self) -> Link<T> {
-        let first_node_link = self.head.borrow().next.clone();
-
-        // Use ptr_eq to check if we are looking at the tail sentinel
-        if let Some(ref first_node) = first_node_link {
-            if Rc::ptr_eq(first_node, &self.tail) {
-                return None;
-            }
-        }
-
-        // 2. Identify the node to remove and the node that will follow it
-        let to_remove = first_node_link.unwrap(); // Safe because of the check above
-        let new_first = to_remove.borrow().next.clone(); // The node after the one we pop
-
-        // 3. Re-link: Head Sentinel -> New First
-        self.head.borrow_mut().next = new_first.clone();
-
-        // 4. Re-link: New First <- Head Sentinel (CRITICAL STEP)
-        if let Some(ref node) = new_first {
-            node.borrow_mut().prev = Some(self.head.clone());
-        }
-
-        to_remove.borrow_mut().next = None;
-        to_remove.borrow_mut().prev = None;
-        self.decrement_size();
-        Some(to_remove)
-    }
-
-    fn pop_back(&mut self) -> Link<T> {
-        let last_node_link = self.tail.borrow().prev.clone();
-
-        if let Some(ref prev) = last_node_link {
-            if Rc::ptr_eq(prev, &self.head) {
-                return None;
-            }
-        }
-
-        let to_remove = last_node_link.unwrap();
-        let new_last = to_remove.borrow().prev.clone();
-
-        self.tail.borrow_mut().prev = new_last.clone();
-
-        if let Some(ref node) = new_last {
-            node.borrow_mut().next = Some(self.tail.clone());
-        }
-
-        to_remove.borrow_mut().next = None;
-        to_remove.borrow_mut().prev = None;
-
-        self.decrement_size();
-        Some(to_remove)
+    pub fn is_full(&mut self) -> bool {
+        self.len() >= self.capacity
     }
 }
 #[cfg(test)]
@@ -151,73 +75,196 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_list_is_empty() {
-        let mut list: DoublyLinkedList<i32> = DoublyLinkedList::new();
-        assert!(list.pop_front().is_none());
-        assert!(list.pop_back().is_none());
+    fn test_new_cache() {
+        let cache: LruCache<i32> = LruCache::new(3);
+        assert_eq!(cache.capacity, 3);
+        assert_eq!(cache.map.len(), 0);
     }
 
     #[test]
-    fn test_push_pop_front() {
-        let mut list = DoublyLinkedList::new();
-        list.push_front(10);
-        list.push_front(20);
+    fn test_access_inserts_key() {
+        let mut cache = LruCache::new(3);
 
-        // Should be [20, 10]
-        let node1 = list.pop_front().unwrap();
-        assert_eq!(node1.borrow().key, 20);
+        cache.access(1);
+        cache.access(2);
 
-        let node2 = list.pop_front().unwrap();
-        assert_eq!(node2.borrow().key, 10);
-
-        assert!(list.pop_front().is_none());
+        assert_eq!(cache.len(), 2);
+        assert!(cache.map.contains_key(&1));
+        assert!(cache.map.contains_key(&2));
     }
 
     #[test]
-    fn test_push_pop_back() {
-        let mut list = DoublyLinkedList::new();
-        list.push_back(10);
-        list.push_back(20);
+    fn test_access_updates_recency() {
+        let mut cache = LruCache::new(3);
 
-        // Should be [10, 20]
-        let node1 = list.pop_back().unwrap();
-        assert_eq!(node1.borrow().key, 20);
+        cache.access(1);
+        cache.access(2);
+        cache.access(3);
 
-        let node2 = list.pop_back().unwrap();
-        assert_eq!(node2.borrow().key, 10);
+        cache.access(1);
 
-        assert!(list.pop_back().is_none());
+        let victim = cache.evict().unwrap();
+        assert_eq!(victim, 2);
     }
 
     #[test]
-    fn test_bidirectional_links() {
-        let mut list = DoublyLinkedList::new();
-        list.push_back(1);
-        list.push_back(2);
+    fn test_remove_existing_key() {
+        let mut cache = LruCache::new(3);
 
-        // Structure: Head <-> 1 <-> 2 <-> Tail
-        let head_next = list.head.borrow().next.clone().unwrap();
-        let first_node_next = head_next.borrow().next.clone().unwrap();
+        cache.access(1);
+        cache.access(2);
 
-        // Verify Forward: 1's next is 2
-        assert_eq!(first_node_next.borrow().key, 2);
+        cache.remove(1).unwrap();
 
-        // Verify Backward: 2's prev is 1
-        let second_node_prev = first_node_next.borrow().prev.clone().unwrap();
-        assert!(Rc::ptr_eq(&second_node_prev, &head_next));
-        assert_eq!(second_node_prev.borrow().key, 1);
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.map.contains_key(&1));
     }
 
     #[test]
-    fn test_mixed_operations() {
-        let mut list = DoublyLinkedList::new();
-        list.push_back(1); // [1]
-        list.push_front(2); // [2, 1]
-        list.push_back(3); // [2, 1, 3]
+    fn test_remove_nonexistent_key() {
+        let mut cache = LruCache::new(3);
 
-        assert_eq!(list.pop_front().unwrap().borrow().key, 2);
-        assert_eq!(list.pop_back().unwrap().borrow().key, 3);
-        assert_eq!(list.pop_front().unwrap().borrow().key, 1);
-        assert!(list.pop_front().is_none());
+        let result = cache.remove(42);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_evict_returns_lru() {
+        let mut cache = LruCache::new(5);
+
+        cache.access(10);
+        cache.access(20);
+        cache.access(30);
+
+        let victim = cache.evict().unwrap();
+        assert_eq!(victim, 10);
+    }
+
+    #[test]
+    fn test_evict_after_access_update() {
+        let mut cache = LruCache::new(5);
+
+        cache.access(1);
+        cache.access(2);
+        cache.access(3);
+
+        cache.access(1);
+
+        let victim = cache.evict().unwrap();
+        assert_eq!(victim, 2);
+    }
+
+    #[test]
+    fn test_evict_empty_cache() {
+        let mut cache: LruCache<i32> = LruCache::new(3);
+
+        let result = cache.evict();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_len() {
+        let mut cache = LruCache::new(5);
+
+        cache.access(1);
+        cache.access(2);
+        cache.access(3);
+
+        assert_eq!(cache.len(), 3);
+    }
+
+    #[test]
+    fn test_is_full_false() {
+        let mut cache = LruCache::new(3);
+
+        cache.access(1);
+        cache.access(2);
+
+        assert!(!cache.is_full());
+    }
+
+    #[test]
+    fn test_is_full_true() {
+        let mut cache = LruCache::new(2);
+
+        cache.access(1);
+        cache.access(2);
+
+        assert!(cache.is_full());
+    }
+
+    #[test]
+    fn test_access_after_remove() {
+        let mut cache = LruCache::new(3);
+
+        cache.access(1);
+        cache.access(2);
+
+        cache.remove(1).unwrap();
+
+        cache.access(1);
+
+        assert_eq!(cache.len(), 2);
+        assert!(cache.map.contains_key(&1));
+    }
+
+    #[test]
+    fn test_lru_order_complex_sequence() {
+        let mut cache = LruCache::new(10);
+
+        cache.access(1);
+        cache.access(2);
+        cache.access(3);
+        cache.access(4);
+
+        cache.access(2);
+        cache.access(3);
+
+        let victim = cache.evict().unwrap();
+
+        assert_eq!(victim, 1);
+    }
+
+    #[test]
+    fn test_multiple_evictions() {
+        let mut cache = LruCache::new(10);
+
+        cache.access(1);
+        cache.access(2);
+        cache.access(3);
+
+        let v1 = cache.evict().unwrap();
+        assert_eq!(v1, 1);
+
+        cache.remove(1).unwrap();
+
+        let v2 = cache.evict().unwrap();
+        assert_eq!(v2, 2);
+    }
+
+    #[test]
+    fn test_access_same_key_multiple_times() {
+        let mut cache = LruCache::new(3);
+
+        cache.access(1);
+        cache.access(1);
+        cache.access(1);
+        assert_eq!(cache.len(), 1);
+        let victim = cache.evict().unwrap();
+        assert_eq!(victim, 1);
+    }
+
+    #[test]
+    fn test_insert_until_capacity() {
+        let mut cache = LruCache::new(3);
+
+        cache.access(1);
+        cache.access(2);
+        cache.access(3);
+
+        assert_eq!(cache.len(), 3);
+        assert!(cache.is_full());
     }
 }
