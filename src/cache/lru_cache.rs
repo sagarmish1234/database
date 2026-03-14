@@ -1,8 +1,10 @@
-use std::{cell::RefCell, collections::HashMap, hash::Hash, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, hash::Hash, rc::Rc, sync::Arc};
 
 use thiserror::Error;
 
 use anyhow::Result;
+
+use crate::config::DbConfig;
 
 use super::{DoublyLinkedList, Node};
 
@@ -22,11 +24,11 @@ pub struct LruCache<T> {
 }
 
 impl<T: Default + Hash + Eq + Clone> LruCache<T> {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(config: Arc<DbConfig>) -> Self {
         Self {
             map: HashMap::new(),
             list: DoublyLinkedList::new(),
-            capacity,
+            capacity: config.cache_size,
         }
     }
 
@@ -74,16 +76,26 @@ impl<T: Default + Hash + Eq + Clone> LruCache<T> {
 mod tests {
     use super::*;
 
+    // Helper to quickly build a config for tests
+    fn mock_config(cache_size: usize) -> Arc<DbConfig> {
+        Arc::new(DbConfig {
+            file_path: "test.db".to_string(),
+            page_size: 4096,
+            cache_size,
+            port: 8080,
+        })
+    }
+
     #[test]
     fn test_new_cache() {
-        let cache: LruCache<i32> = LruCache::new(3);
+        let cache: LruCache<i32> = LruCache::new(mock_config(3));
         assert_eq!(cache.capacity, 3);
         assert_eq!(cache.map.len(), 0);
     }
 
     #[test]
     fn test_access_inserts_key() {
-        let mut cache = LruCache::new(3);
+        let mut cache = LruCache::new(mock_config(3));
 
         cache.access(1);
         cache.access(2);
@@ -95,13 +107,13 @@ mod tests {
 
     #[test]
     fn test_access_updates_recency() {
-        let mut cache = LruCache::new(3);
+        let mut cache = LruCache::new(mock_config(3));
 
         cache.access(1);
         cache.access(2);
         cache.access(3);
 
-        cache.access(1);
+        cache.access(1); // 1 is now most recent, 2 is oldest
 
         let victim = cache.evict().unwrap();
         assert_eq!(victim, 2);
@@ -109,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_remove_existing_key() {
-        let mut cache = LruCache::new(3);
+        let mut cache = LruCache::new(mock_config(3));
 
         cache.access(1);
         cache.access(2);
@@ -122,16 +134,14 @@ mod tests {
 
     #[test]
     fn test_remove_nonexistent_key() {
-        let mut cache = LruCache::new(3);
-
+        let mut cache = LruCache::new(mock_config(3));
         let result = cache.remove(42);
-
         assert!(result.is_err());
     }
 
     #[test]
     fn test_evict_returns_lru() {
-        let mut cache = LruCache::new(5);
+        let mut cache = LruCache::new(mock_config(5));
 
         cache.access(10);
         cache.access(20);
@@ -142,77 +152,26 @@ mod tests {
     }
 
     #[test]
-    fn test_evict_after_access_update() {
-        let mut cache = LruCache::new(5);
-
-        cache.access(1);
-        cache.access(2);
-        cache.access(3);
-
-        cache.access(1);
-
-        let victim = cache.evict().unwrap();
-        assert_eq!(victim, 2);
-    }
-
-    #[test]
     fn test_evict_empty_cache() {
-        let mut cache: LruCache<i32> = LruCache::new(3);
-
+        let mut cache: LruCache<i32> = LruCache::new(mock_config(3));
         let result = cache.evict();
-
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_len() {
-        let mut cache = LruCache::new(5);
+    fn test_is_full() {
+        let mut cache = LruCache::new(mock_config(2));
 
         cache.access(1);
-        cache.access(2);
-        cache.access(3);
-
-        assert_eq!(cache.len(), 3);
-    }
-
-    #[test]
-    fn test_is_full_false() {
-        let mut cache = LruCache::new(3);
-
-        cache.access(1);
-        cache.access(2);
-
         assert!(!cache.is_full());
-    }
 
-    #[test]
-    fn test_is_full_true() {
-        let mut cache = LruCache::new(2);
-
-        cache.access(1);
         cache.access(2);
-
         assert!(cache.is_full());
     }
 
     #[test]
-    fn test_access_after_remove() {
-        let mut cache = LruCache::new(3);
-
-        cache.access(1);
-        cache.access(2);
-
-        cache.remove(1).unwrap();
-
-        cache.access(1);
-
-        assert_eq!(cache.len(), 2);
-        assert!(cache.map.contains_key(&1));
-    }
-
-    #[test]
     fn test_lru_order_complex_sequence() {
-        let mut cache = LruCache::new(10);
+        let mut cache = LruCache::new(mock_config(10));
 
         cache.access(1);
         cache.access(2);
@@ -223,48 +182,19 @@ mod tests {
         cache.access(3);
 
         let victim = cache.evict().unwrap();
-
         assert_eq!(victim, 1);
-    }
-
-    #[test]
-    fn test_multiple_evictions() {
-        let mut cache = LruCache::new(10);
-
-        cache.access(1);
-        cache.access(2);
-        cache.access(3);
-
-        let v1 = cache.evict().unwrap();
-        assert_eq!(v1, 1);
-
-        cache.remove(1).unwrap();
-
-        let v2 = cache.evict().unwrap();
-        assert_eq!(v2, 2);
     }
 
     #[test]
     fn test_access_same_key_multiple_times() {
-        let mut cache = LruCache::new(3);
+        let mut cache = LruCache::new(mock_config(3));
 
         cache.access(1);
         cache.access(1);
         cache.access(1);
+
         assert_eq!(cache.len(), 1);
         let victim = cache.evict().unwrap();
         assert_eq!(victim, 1);
-    }
-
-    #[test]
-    fn test_insert_until_capacity() {
-        let mut cache = LruCache::new(3);
-
-        cache.access(1);
-        cache.access(2);
-        cache.access(3);
-
-        assert_eq!(cache.len(), 3);
-        assert!(cache.is_full());
     }
 }

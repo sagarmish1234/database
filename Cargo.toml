@@ -9,6 +9,8 @@ edition = "2024"
 anyhow = "1.0.102"
 claims = "0.8.0"
 filepath = "0.2.0"
+serde = {version = "1.0", features=["derive"] }
+serde_yaml = "0.9.34"
 tempfile = "3.26.0"
 thiserror = "2.0.18"
 

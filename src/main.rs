@@ -1,6 +1,5 @@
-use pager::Pager;
-
 mod cache;
+mod config;
 mod pager;
 
 fn main() {

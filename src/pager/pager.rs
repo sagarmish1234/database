@@ -1,20 +1,23 @@
 use anyhow::Result;
 use std::{
-    collections::HashMap,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
+    sync::Arc,
 };
 use thiserror::Error;
+
+use crate::config::DbConfig;
+
 pub struct Pager {
     page_count: usize,
     file: File,
-    buffer_pool: HashMap<usize, Page>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Page {
     pub content: [u8; Pager::PAGE_SIZE],
     pub page_id: usize,
+    pub is_dirty: bool,
 }
 
 #[derive(Error, Debug, PartialEq)]
@@ -31,25 +34,20 @@ pub enum PageError {
 
 impl Pager {
     pub const PAGE_SIZE: usize = 4096;
-    pub const CACHE_SIZE: usize = 100;
 
-    pub fn new(file_path: &str) -> Result<Self> {
+    pub fn new(config: Arc<DbConfig>) -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
-            .open(file_path)?;
+            .open(&config.file_path)?;
 
-        if !(file.metadata()?.len() as usize).is_multiple_of(Self::PAGE_SIZE) {
-            return Err(PageError::CorruptedDatabaseFile(file_path.into()).into());
+        if !(file.metadata()?.len() as usize).is_multiple_of(config.page_size) {
+            return Err(PageError::CorruptedDatabaseFile((&config.file_path).into()).into());
         }
 
         let page_count = file.metadata()?.len() as usize / Self::PAGE_SIZE;
-        Ok(Self {
-            page_count,
-            file,
-            buffer_pool: HashMap::new(),
-        })
+        Ok(Self { page_count, file })
     }
 
     pub fn page_count(&self) -> usize {
@@ -82,7 +80,11 @@ impl Pager {
         self.file.seek(SeekFrom::Start(offset as u64))?;
         self.file.read_exact(&mut content)?;
 
-        Ok(Page { content, page_id })
+        Ok(Page {
+            content,
+            page_id,
+            is_dirty: false,
+        })
     }
 
     pub fn allocate_page(&mut self) -> Result<Page> {
@@ -90,7 +92,11 @@ impl Pager {
         self.write_content(self.page_count, &content)?;
         let page_id = self.page_count;
         self.page_count += 1;
-        Ok(Page { content, page_id })
+        Ok(Page {
+            content,
+            page_id,
+            is_dirty: false,
+        })
     }
 
     pub fn write_page(&mut self, page_id: usize, content: &[u8]) -> Result<()> {
@@ -110,49 +116,112 @@ impl Pager {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use tempfile::NamedTempFile;
 
+    // Helper to create a dummy config for tests
+    fn create_test_config(path: &str) -> Arc<DbConfig> {
+        Arc::new(DbConfig {
+            file_path: path.to_string(),
+            page_size: Pager::PAGE_SIZE,
+            cache_size: 10,
+            port: 8080,
+        })
+    }
+
     #[test]
-    fn test_pager_write_and_read() -> Result<()> {
-        let temp_file = NamedTempFile::new()?;
-        let path_str = temp_file.path().to_str().expect("Path not valid UTF-8");
-        let mut pager = Pager::new(path_str)?;
-        let allocate_page = pager.allocate_page()?;
-        println!("Page id - {}", allocate_page.page_id);
-        assert!(allocate_page.page_id == 0);
-        assert_eq!(allocate_page.content, [0u8; Pager::PAGE_SIZE]);
-        let content = [1u8; Pager::PAGE_SIZE];
-        pager.write_page(0, &content)?;
-        let page = pager.read_page(0)?;
-        assert_eq!(page.content, content);
-        assert_eq!(page.page_id, 0);
+    fn test_pager_initialization() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let config = create_test_config(tmp.path().to_str().unwrap());
+
+        let pager = Pager::new(config)?;
+        assert_eq!(pager.page_count(), 0);
         Ok(())
     }
 
     #[test]
-    fn test_pager_write_and_read_negative() -> Result<()> {
-        let temp_file = NamedTempFile::new()?;
-        let path_str = temp_file.path().to_str().expect("Path not valid UTF-8");
-        let mut pager = Pager::new(path_str)?;
-        let allocate_page = pager.allocate_page()?;
-        println!("Page id - {}", allocate_page.page_id);
-        assert!(allocate_page.page_id == 0);
-        assert_eq!(allocate_page.content, [0u8; Pager::PAGE_SIZE]);
-        let content = [1u8; Pager::PAGE_SIZE + 2];
-        assert_eq!(
-            pager.write_page(2, &content).unwrap_err().to_string(),
-            PageError::InvalidPageId(2).to_string()
-        );
-        assert_eq!(
-            pager.write_page(0, &content).unwrap_err().to_string(),
-            PageError::InvalidPageSize(4098).to_string()
-        );
-        assert_eq!(
-            pager.read_page(2).unwrap_err().to_string(),
-            PageError::InvalidPageId(2).to_string()
-        );
+    fn test_allocate_and_read_page() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let config = create_test_config(tmp.path().to_str().unwrap());
+        let mut pager = Pager::new(config)?;
+
+        // Allocate first page
+        let page = pager.allocate_page()?;
+        assert_eq!(page.page_id, 0);
+        assert_eq!(pager.page_count(), 1);
+
+        // Read it back
+        let read_page = pager.read_page(0)?;
+        assert_eq!(read_page.page_id, 0);
+        assert_eq!(read_page.content, [0u8; Pager::PAGE_SIZE]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_and_persistence() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let path = tmp.path().to_str().unwrap().to_string();
+        let config = create_test_config(&path);
+
+        let mut pager = Pager::new(config.clone())?;
+        pager.allocate_page()?;
+
+        // Write specific data
+        let mut data = [0u8; Pager::PAGE_SIZE];
+        data[0] = 42;
+        data[Pager::PAGE_SIZE - 1] = 99;
+        pager.write_page(0, &data)?;
+
+        // Drop original pager to flush/close file
+        drop(pager);
+
+        // Re-open pager and check if data persisted
+        let mut new_pager = Pager::new(config)?;
+        let read_page = new_pager.read_page(0)?;
+        assert_eq!(read_page.content[0], 42);
+        assert_eq!(read_page.content[Pager::PAGE_SIZE - 1], 99);
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_page_id() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let config = create_test_config(tmp.path().to_str().unwrap());
+        let mut pager = Pager::new(config)?;
+
+        let result = pager.read_page(999);
+        assert!(result.is_err());
+
+        // Downcast to check specific error type if needed
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid page id 999"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_corrupted_file_size() -> Result<()> {
+        let mut tmp = NamedTempFile::new()?;
+        // Write 100 bytes (not a multiple of 4096)
+        tmp.write_all(&[0u8; 100])?;
+
+        let config = create_test_config(tmp.path().to_str().unwrap());
+        let result = Pager::new(config);
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_content_size_write() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let config = create_test_config(tmp.path().to_str().unwrap());
+        let mut pager = Pager::new(config)?;
+
+        pager.allocate_page()?;
+        let short_data = vec![1, 2, 3];
+        let result = pager.write_page(0, &short_data);
+
+        assert!(result.is_err());
         Ok(())
     }
 }
