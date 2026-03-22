@@ -1,0 +1,16 @@
+
+* B+ Tree Implementation
+
+
+1) Navigate to the correct leaf node
+2) Insert the new key in sorted order
+
+3) If overflow occurs:
+   + Split the leaf node
+   + Push the middle key to the parent
+   + This process may propagate up to the root
+
+
+
+
+

@@ -191,7 +191,7 @@ impl<T: Default + Clone> DoublyLinkedList<T> {
     }
 }
 #[cfg(test)]
-mod tests {
+mod doubly_linked_lists_tests {
     use super::*;
 
     #[test]

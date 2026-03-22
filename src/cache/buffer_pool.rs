@@ -8,7 +8,7 @@ use crate::{
     pager::{Page, Pager},
 };
 
-type PageId = usize;
+pub type PageId = usize;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum BufferPoolError {
@@ -16,7 +16,7 @@ pub enum BufferPoolError {
     PageNotFound(PageId),
 }
 
-struct BufferPool {
+pub struct BufferPool {
     pool: HashMap<PageId, Rc<RefCell<Page>>>,
     cache_evictor: LruCache<PageId>,
     pager: Pager,
@@ -28,7 +28,7 @@ struct BufferPool {
 // allocate_page() DONE
 // evict_page() DONE
 // flush_page()  DONE
-// flush_all()
+// flush_all() DONE
 
 impl BufferPool {
     pub fn new(config: Arc<DbConfig>) -> Result<Self> {
@@ -70,6 +70,17 @@ impl BufferPool {
         Ok(page.clone())
     }
 
+    pub fn evict_page(&mut self) -> Result<()> {
+        let page_id = self.cache_evictor.evict()?;
+        let page = self.pool.get(&page_id).unwrap();
+        if page.borrow().is_dirty {
+            self.flush_page(page_id)?;
+        }
+        self.pool.remove(&page_id);
+        self.cache_evictor.remove(page_id)?;
+        Ok(())
+    }
+
     pub fn flush_page(&mut self, page_id: PageId) -> Result<()> {
         if let None = self.pool.get(&page_id) {
             return Err(BufferPoolError::PageNotFound(page_id.clone()).into());
@@ -79,17 +90,6 @@ impl BufferPool {
         let page = self.pool.get(&page_id).unwrap().clone();
         self.pager.write_page(page_id, &page.borrow().content)?;
         page.borrow_mut().is_dirty = false;
-        Ok(())
-    }
-
-    pub fn evict_page(&mut self) -> Result<()> {
-        let page_id = self.cache_evictor.evict()?;
-        let page = self.pool.get(&page_id).unwrap();
-        if page.borrow().is_dirty {
-            self.flush_page(page_id)?;
-        }
-        self.pool.remove(&page_id);
-        self.cache_evictor.remove(page_id)?;
         Ok(())
     }
 
@@ -104,7 +104,7 @@ impl BufferPool {
 }
 
 #[cfg(test)]
-mod tests {
+mod buffered_pool_tests {
     use super::*;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
