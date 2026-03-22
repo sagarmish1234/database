@@ -91,9 +91,9 @@ impl<K: Ord + Clone, V: Clone + Ord> BPlustree<K, V> {
     }
 
     fn is_leaf_overflow(node: &LeafNode<K, V>, order: usize) -> bool {
-        let limit = ((order as f64 - 1f64) / 2 as f64).ceil();
+        let limit = (order - 1);
 
-        node.pairs.len() as f64 > limit
+        node.pairs.len() > limit
     }
 
     fn insert_into_node(node: &mut Node<K, V>, key: K, value: V, order: usize) -> InsertType<K, V> {
@@ -141,9 +141,8 @@ impl<K: Ord + Clone, V: Clone + Ord> BPlustree<K, V> {
     }
 
     fn is_internal_overflow(internal_node: &mut InternalNode<K, V>, order: usize) -> bool {
-        let limit = ((order as f64 - 1f64) / 2 as f64).ceil();
-
-        internal_node.keys.len() as f64 > limit
+        let limit = (order - 1);
+        internal_node.keys.len() > limit
     }
 
     // |16|21|22| ->    |21|
@@ -163,105 +162,44 @@ impl<K: Ord + Clone, V: Clone + Ord> BPlustree<K, V> {
 mod b_tree_tests {
     use super::*;
 
-    #[test]
-    fn test_internal_node_search() {
-        let left = Box::new(Node::Leaf(LeafNode {
-            keys: vec![10, 20],
-            values: vec!["a", "b"],
-        }));
-
-        let right = Box::new(Node::Leaf(LeafNode {
-            keys: vec![30, 40],
-            values: vec!["c", "d"],
-        }));
-
-        let root = Node::Internal(InternalNode {
-            keys: vec![30],
-            children: vec![left, right],
-        });
-
-        let tree = BPlustree {
-            root: Box::new(root),
-            order: 3,
-        };
-
-        assert_eq!(tree.search(20), Some(&"b"));
-        assert_eq!(tree.search(40), Some(&"d"));
-    }
-
-    #[test]
-    fn test_insert_single_value() {
-        let mut tree = BPlustree::new(3);
-
-        tree.insert(10, "ten".to_string());
-
-        assert_eq!(tree.search(10), Some(&"ten".to_string()));
-    }
-    #[test]
-    fn test_insert_multiple_sorted() {
-        let mut tree = BPlustree::new(3);
-
-        tree.insert(20, "twenty".to_string());
-        tree.insert(10, "ten".to_string());
-        tree.insert(30, "thirty".to_string());
-
-        match tree.root.as_ref() {
+    // ---------- Helper ----------
+    fn validate_node<K: Ord + Clone, V: Clone>(node: &Node<K, V>) {
+        match node {
             Node::Leaf(leaf) => {
-                assert_eq!(leaf.keys, vec![10, 20, 30]);
+                for i in 1..leaf.pairs.len() {
+                    assert!(leaf.pairs[i - 1].key <= leaf.pairs[i].key);
+                }
             }
-            _ => panic!("root should be leaf"),
+
+            Node::Internal(internal) => {
+                for i in 1..internal.keys.len() {
+                    assert!(internal.keys[i - 1] <= internal.keys[i]);
+                }
+
+                assert_eq!(internal.children.len(), internal.keys.len() + 1);
+
+                for child in &internal.children {
+                    validate_node(child);
+                }
+            }
         }
     }
+
+    // ---------- Basic Tests ----------
+
     #[test]
     fn test_empty_tree_search() {
         let tree: BPlustree<i32, String> = BPlustree::new(3);
-
-        let result = tree.search(10);
-
-        assert_eq!(result, None);
+        assert_eq!(tree.search(10), None);
     }
 
     #[test]
-    fn test_search_existing_key() {
-        let mut tree: BPlustree<i32, String> = BPlustree::new(3);
+    fn test_single_insert() {
+        let mut tree = BPlustree::new(3);
 
-        // manually create a leaf node
-        tree.root = Box::new(Node::Leaf(LeafNode {
-            keys: vec![1, 2, 3],
-            values: vec!["one".to_string(), "two".to_string(), "three".to_string()],
-        }));
+        tree.insert(10, "ten".to_string());
 
-        let result = tree.search(2);
-
-        assert_eq!(result, Some(&"two".to_string()));
-    }
-
-    #[test]
-    fn test_search_non_existing_key() {
-        let mut tree: BPlustree<i32, String> = BPlustree::new(3);
-
-        tree.root = Box::new(Node::Leaf(LeafNode {
-            keys: vec![1, 2, 3],
-            values: vec!["one".to_string(), "two".to_string(), "three".to_string()],
-        }));
-
-        let result = tree.search(4);
-
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_single_element_tree() {
-        let mut tree: BPlustree<i32, String> = BPlustree::new(3);
-
-        tree.root = Box::new(Node::Leaf(LeafNode {
-            keys: vec![10],
-            values: vec!["ten".to_string()],
-        }));
-
-        let result = tree.search(10);
-
-        assert_eq!(result, Some(&"ten".to_string()));
+        assert_eq!(tree.search(10).map(|v| v.as_str()), Some("ten"));
     }
 
     #[test]
@@ -269,17 +207,170 @@ mod b_tree_tests {
         let mut tree: BPlustree<i32, String> = BPlustree::new(4);
 
         tree.root = Box::new(Node::Leaf(LeafNode {
-            keys: vec![5, 10, 15, 20],
-            values: vec![
-                "five".to_string(),
-                "ten".to_string(),
-                "fifteen".to_string(),
-                "twenty".to_string(),
+            pairs: vec![
+                KeyValue::new(5, "five".to_string()),
+                KeyValue::new(10, "ten".to_string()),
+                KeyValue::new(15, "fifteen".to_string()),
+                KeyValue::new(20, "twenty".to_string()),
             ],
         }));
 
-        assert_eq!(tree.search(5), Some(&"five".to_string()));
-        assert_eq!(tree.search(15), Some(&"fifteen".to_string()));
-        assert_eq!(tree.search(20), Some(&"twenty".to_string()));
+        assert_eq!(tree.search(5).map(|v| v.as_str()), Some("five"));
+        assert_eq!(tree.search(15).map(|v| v.as_str()), Some("fifteen"));
+        assert_eq!(tree.search(20).map(|v| v.as_str()), Some("twenty"));
+    }
+
+    // ---------- Insert Behavior ----------
+
+    #[test]
+    fn test_insert_preserves_sorted_order() {
+        let mut tree = BPlustree::new(4);
+
+        tree.insert(30, "a".to_string());
+        tree.insert(10, "b".to_string());
+        tree.insert(20, "c".to_string());
+
+        match tree.root.as_ref() {
+            Node::Leaf(leaf) => {
+                let keys: Vec<_> = leaf.pairs.iter().map(|p| p.key).collect();
+                assert_eq!(keys, vec![10, 20, 30]);
+            }
+            _ => panic!("expected leaf"),
+        }
+    }
+
+    #[test]
+    fn test_leaf_split_trigger() {
+        let mut tree = BPlustree::new(3);
+
+        tree.insert(10, "a".to_string());
+        tree.insert(20, "b".to_string());
+        tree.insert(30, "c".to_string());
+        tree.insert(40, "d".to_string());
+
+        match tree.root.as_ref() {
+            Node::Internal(_) => {}
+            _ => panic!("expected root to be internal after split"),
+        }
+
+        validate_node(tree.root.as_ref());
+    }
+
+    // ---------- Deep Insert / Split Tests ----------
+
+    #[test]
+    fn test_bulk_insert_and_search() {
+        let mut tree = BPlustree::new(3);
+
+        for i in 1..100 {
+            tree.insert(i, i.to_string());
+        }
+
+        for i in 1..100 {
+            assert_eq!(
+                tree.search(i).map(|v| v.as_str()),
+                Some(i.to_string().as_str())
+            );
+        }
+
+        validate_node(tree.root.as_ref());
+    }
+
+    #[test]
+    fn test_internal_node_split() {
+        let mut tree = BPlustree::new(3);
+
+        for i in 1..100 {
+            tree.insert(i, i);
+        }
+
+        match tree.root.as_ref() {
+            Node::Internal(root) => {
+                assert!(root.children.len() >= 2);
+            }
+            _ => panic!("root should be internal"),
+        }
+
+        validate_node(tree.root.as_ref());
+    }
+
+    // ---------- Stress Tests ----------
+
+    #[test]
+    fn test_sequential_insert_stress() {
+        let mut tree = BPlustree::new(3);
+
+        for i in 1..200 {
+            tree.insert(i, i);
+        }
+
+        for i in 1..200 {
+            assert_eq!(tree.search(i), Some(&i));
+        }
+
+        validate_node(tree.root.as_ref());
+    }
+
+    #[test]
+    fn test_reverse_insert() {
+        let mut tree = BPlustree::new(3);
+
+        for i in (1..200).rev() {
+            tree.insert(i, i);
+        }
+
+        for i in 1..200 {
+            assert_eq!(tree.search(i), Some(&i));
+        }
+
+        validate_node(tree.root.as_ref());
+    }
+
+    #[test]
+    fn test_random_insert() {
+        let mut tree = BPlustree::new(3);
+
+        let keys = vec![50, 10, 70, 30, 20, 90, 40, 60, 80];
+
+        for k in &keys {
+            tree.insert(*k, *k);
+        }
+
+        for k in &keys {
+            assert_eq!(tree.search(*k), Some(k));
+        }
+
+        validate_node(tree.root.as_ref());
+    }
+
+    // ---------- Edge Cases ----------
+
+    #[test]
+    fn test_duplicate_insert() {
+        let mut tree = BPlustree::new(3);
+
+        tree.insert(10, 1);
+        tree.insert(10, 2);
+
+        assert!(tree.search(10).is_some());
+    }
+
+    #[test]
+    fn test_missing_keys() {
+        let mut tree = BPlustree::new(3);
+
+        for i in 1..50 {
+            tree.insert(i * 2, i);
+        }
+
+        for i in 1..100 {
+            if i % 2 == 0 {
+                assert!(tree.search(i).is_some());
+            } else {
+                assert_eq!(tree.search(i), None);
+            }
+        }
+
+        validate_node(tree.root.as_ref());
     }
 }
